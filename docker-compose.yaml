@@ -1,0 +1,11 @@
+services:
+    hanbat-webhook:
+        image: hanbat-webhook
+        build: ./
+        volumes:
+            - ./posts.json:/usr/src/app/posts.json
+        environment:
+            - TZ=Asia/Seoul
+        env_file:
+            - .env
+        restart: unless-stopped
