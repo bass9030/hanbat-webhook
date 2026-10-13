@@ -18,47 +18,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class PostsDatabase:
-    """게시글 데이터베이스 관리"""
-    
+    """마지막으로 확인한 게시글 번호 관리"""
+
     def __init__(self, db_file=POSTS_DB_FILE):
         self.db_file = db_file
-        self.posts = self._load_posts()
-    
-    def _load_posts(self):
-        """저장된 게시글 로드"""
+        self.last_post_no = self._load_last_post_no()
+
+    def _load_last_post_no(self):
+        """저장된 마지막 게시글 번호 로드 (없거나 구버전 형식이면 None)"""
         if os.path.exists(self.db_file):
             try:
                 with open(self.db_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return int(data['last_post_no'])
             except Exception as e:
-                logger.error(f"게시글 로드 실패: {e}")
-                return []
-        return []
-    
-    def save_posts(self):
-        """게시글 저장"""
+                logger.error(f"게시글 번호 로드 실패: {e}")
+        return None
+
+    def save_last_post_no(self, post_no):
+        """마지막 게시글 번호 저장"""
+        self.last_post_no = post_no
         try:
             with open(self.db_file, 'w', encoding='utf-8') as f:
-                json.dump(self.posts, f, ensure_ascii=False, indent=2)
+                json.dump({'last_post_no': post_no}, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"게시글 저장 실패: {e}")
-    
-    def add_post(self, post_id):
-        """새 게시글 추가"""
-        self.posts.append(post_id)
-        
-        if len(self.posts) > 10:
-            self.posts = self.posts[-10:]
-
-        self.save_posts()
-    
-    def has_post(self, post_id):
-        """게시글 존재 여부 확인"""
-        return post_id in self.posts
-    
-    def get_all_posts(self):
-        """모든 게시글 반환"""
-        return self.posts
+            logger.error(f"게시글 번호 저장 실패: {e}")
 
 
 class Crawler:
@@ -74,7 +59,16 @@ class Crawler:
     def fetch_page(self):
         """페이지 가져오기"""
         try:
-            response = self.session.get(TARGET_URL, timeout=10)
+            req_body = {
+                "pageIndex": 1,
+                "cmsNoStr": "",
+                "nttId": "",
+                "mno": "sub05_01",
+                "searchCondition": "all",
+                "searchKeyword": "",
+                "pageUnit": 10
+            }
+            response = self.session.post(TARGET_URL, data=req_body, timeout=10)
             response.encoding = 'utf-8'
             return response.text
         except requests.RequestException as e:
@@ -100,12 +94,12 @@ class Crawler:
                 return []
             
             # 행(tr) 찾기
-            rows = table.find_all('tr')
+            rows = table.select('tr:not(.notice)')  # 공지사항 제외
             
-            for row in reversed(rows[1:]):  # 머리글 제외
+            for row in reversed(rows):
                 # notice 클래스 제외
-                if 'notice' in row.get('class', []):
-                    continue
+                # if 'notice' in row.get('class', []):
+                #     continue
                 
                 try:
                     cols = row.find_all('td')
@@ -116,7 +110,13 @@ class Crawler:
                     title_elem = cols[1].find('a')
                     if not title_elem:
                         continue
-                    
+
+                    # 게시글 번호 (정수가 아니면 일반 게시글이 아니므로 제외)
+                    post_no = cols[0].get_text(strip=True)
+                    if not post_no.isdigit():
+                        continue
+                    post_no = int(post_no)
+
                     title = title_elem.get_text(strip=True)
 
                     # 게시글 ID는 링크에서 추출 (URL 전체를 ID로 사용)
@@ -135,6 +135,7 @@ class Crawler:
                     date = cols[4].get_text(strip=True) if len(cols) > 3 else ''
                     
                     post = {
+                        'post_no': post_no,
                         'title': title,
                         'link': link,
                         'author': author,
@@ -161,14 +162,25 @@ class Crawler:
             return []
         
         all_posts = self.parse_posts(html)
+        if not all_posts:
+            return []
+
+        # 최초 실행(저장된 번호 없음): 알림 없이 현재 최신 번호를 기준으로 저장
+        if self.db.last_post_no is None:
+            self.db.save_last_post_no(max(p['post_no'] for _, p in all_posts))
+            logger.info(f"기준 게시글 번호 저장: {self.db.last_post_no}")
+            return []
+
         new_posts = []
-        
         for post_id, post_data in all_posts:
-            if not self.db.has_post(post_id):
+            if post_data['post_no'] > self.db.last_post_no:
                 new_posts.append((post_id, post_data))
-                self.db.add_post(post_id)
                 logger.info(f"신규 게시글 감지: {post_data['title']}")
-        
+
+        if new_posts:
+            new_posts.sort(key=lambda x: x[1]['post_no'])
+            self.db.save_last_post_no(new_posts[-1][1]['post_no'])
+
         return new_posts
     
     def close(self):
