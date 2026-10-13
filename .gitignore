@@ -1,5 +1,4 @@
 .env
-pyproject.toml
-uv.lock
 .venv
+*.log
 __pycache__
