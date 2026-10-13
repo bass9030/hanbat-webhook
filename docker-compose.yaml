@@ -1,6 +1,6 @@
 services:
-    hanbat-webhook:
-        image: hanbat-webhook
+    hanbat-rss:
+        image: hanbat-rss
         build: ./
         volumes:
             - ./posts.json:/usr/src/app/posts.json
